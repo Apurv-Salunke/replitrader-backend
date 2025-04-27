@@ -21,12 +21,12 @@ from blueprints.brlogin import brlogin_bp
 from blueprints.core import core_bp
 from blueprints.analyzer import analyzer_bp  # Import the analyzer blueprint
 from blueprints.settings import settings_bp  # Import the settings blueprint
-from blueprints.chartink import chartink_bp  # Import the chartink blueprint
+# from blueprints.chartink import chartink_bp  # Import the chartink blueprint
 from blueprints.traffic import traffic_bp  # Import the traffic blueprint
 from blueprints.latency import latency_bp  # Import the latency blueprint
 from blueprints.strategy import strategy_bp  # Import the strategy blueprint
 
-from restx_api import api_v1_bp, api
+from restx_api import api_v1_bp
 
 from database.auth_db import init_db as ensure_auth_tables_exists
 from database.user_db import init_db as ensure_user_tables_exists
@@ -34,7 +34,6 @@ from database.symbol import init_db as ensure_master_contract_tables_exists
 from database.apilog_db import init_db as ensure_api_log_tables_exists
 from database.analyzer_db import init_db as ensure_analyzer_tables_exists
 from database.settings_db import init_db as ensure_settings_tables_exists
-from database.chartink_db import init_db as ensure_chartink_tables_exists
 from database.traffic_db import init_logs_db as ensure_traffic_logs_exists
 from database.latency_db import init_latency_db as ensure_latency_tables_exists
 from database.strategy_db import init_db as ensure_strategy_tables_exists
@@ -78,7 +77,6 @@ def create_app():
     app.register_blueprint(core_bp)
     app.register_blueprint(analyzer_bp)
     app.register_blueprint(settings_bp)
-    app.register_blueprint(chartink_bp)
     app.register_blueprint(traffic_bp)
     app.register_blueprint(latency_bp)
     app.register_blueprint(strategy_bp)
@@ -117,7 +115,6 @@ def setup_environment(app):
         ensure_api_log_tables_exists()
         ensure_analyzer_tables_exists()
         ensure_settings_tables_exists()
-        ensure_chartink_tables_exists()
         ensure_traffic_logs_exists()
         ensure_latency_tables_exists()
         ensure_strategy_tables_exists()
@@ -139,5 +136,5 @@ if __name__ == '__main__':
     host_ip = os.getenv('FLASK_HOST_IP', '127.0.0.1')  # Default to '127.0.0.1' if not set
     port = int(os.getenv('FLASK_PORT', 5000))  # Default to 5000 if not set
     debug = os.getenv('FLASK_DEBUG', 'False').lower() in ('true', '1', 't')  # Default to False if not set
-
-    socketio.run(app, host=host_ip, port=port, debug=debug)
+    app.run()
+    # socketio.run(app, host=host_ip, port=port, debug=debug)
