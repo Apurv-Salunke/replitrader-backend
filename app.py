@@ -55,14 +55,23 @@ def create_app():
 
     # Initialize Authlib OAuth
     oauth.init_app(app)
-    # Register Google OAuth client
+    # Register Google OAuth client - Explicitly passing credentials for diagnosis
+    google_client_id = os.getenv('GOOGLE_CLIENT_ID')
+    google_client_secret = os.getenv('GOOGLE_CLIENT_SECRET')
+
+    if not google_client_id or not google_client_secret:
+        print("[WARN] GOOGLE_CLIENT_ID or GOOGLE_CLIENT_SECRET environment variables not set!")
+        # Decide how to handle this - maybe raise an error or skip registration
+
     oauth.register(
         name='google',
+        client_id=google_client_id,             # Pass explicitly
+        client_secret=google_client_secret,         # Pass explicitly
         server_metadata_url='https://accounts.google.com/.well-known/openid-configuration',
         client_kwargs={
             'scope': 'openid email profile' # Request access to OpenID, email, and profile
         }
-        # client_id, client_secret are loaded from app.config automatically by Authlib
+        # client_id, client_secret are loaded from app.config automatically by Authlib (Now overridden)
     )
 
     # Environment variables
@@ -72,6 +81,8 @@ def create_app():
     # Google OAuth Config
     app.config['GOOGLE_CLIENT_ID'] = os.getenv('GOOGLE_CLIENT_ID')
     app.config['GOOGLE_CLIENT_SECRET'] = os.getenv('GOOGLE_CLIENT_SECRET')
+    print(app.config['GOOGLE_CLIENT_ID'])
+    print(app.config['GOOGLE_CLIENT_SECRET'])
 
     # Register RESTx API blueprint first
     app.register_blueprint(api_v1_bp)
