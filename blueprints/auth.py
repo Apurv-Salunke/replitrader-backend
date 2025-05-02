@@ -175,7 +175,7 @@ def verify_otp():
         payload = {
             'user_id': user.id,
             'email': user.email,
-            'role': user.role.value if user.role else None, # Include role or None
+            'role': user.role.value if user.role else None, # Handle None role
             'exp': datetime.datetime.now(datetime.timezone.utc) + JWT_EXPIRATION_DELTA
         }
         token = jwt.encode(payload, jwt_secret, algorithm="HS256")
@@ -339,36 +339,46 @@ def google_callback():
         payload = {
             'user_id': user.id,
             'email': user.email,
-            'role': user.role.value,
+            'role': user.role.value if user.role else None, # Handle None role
             'exp': datetime.datetime.now(datetime.timezone.utc) + JWT_EXPIRATION_DELTA
         }
         app_token = jwt.encode(payload, jwt_secret, algorithm="HS256")
 
-        # Redirect user to frontend, setting the JWT as a cookie
-        # The frontend will then use this cookie for subsequent API calls
-        frontend_dashboard_url = os.getenv('FRONTEND_URL', '/') # Use env var for frontend URL
-        response = redirect(frontend_dashboard_url)
-        response.set_cookie(
-            'auth_token',            # Cookie name
-            app_token,               # The JWT value
-            httponly=True,           # Prevent JS access
-            samesite='Lax',          # CSRF protection
-            # secure=True,           # Uncomment in production when using HTTPS
-            max_age=int(JWT_EXPIRATION_DELTA.total_seconds()) # Set cookie expiry
-        )
-        return response
+        # --- Redirect to Frontend Callback with Token --- 
+        # The frontend will then use this cookie for subsequent API calls (REMOVED)
+        # frontend_dashboard_url = os.getenv('FRONTEND_URL', '/') # Use env var for frontend URL
+        # response = redirect(frontend_dashboard_url)
+        # response.set_cookie(
+        #     'auth_token',            # Cookie name
+        #     app_token,               # The JWT value
+        #     httponly=True,           # Prevent JS access
+        #     samesite='Lax',          # CSRF protection
+        #     # secure=True,           # Uncomment in production when using HTTPS
+        #     max_age=int(JWT_EXPIRATION_DELTA.total_seconds()) # Set cookie expiry
+        # )
+        # Construct frontend callback URL with token
+        frontend_callback_url = os.getenv('FRONTEND_AUTH_CALLBACK_URL', 'http://localhost:3000/auth/callback')
+        redirect_url_with_token = f"{frontend_callback_url}?token={app_token}"
+        return redirect(redirect_url_with_token)
 
     except Exception as e:
         print(f"[ERROR] Google OAuth callback error: {e}")
-        # Redirect to a generic error page or login page on failure
-        return redirect(url_for('auth.login_error_page', error_message='Google authentication failed')) # Need to create this route or redirect elsewhere
+        # Redirect to a generic error page or login page on failure (REMOVED)
+        # return redirect(url_for('auth.login_error_page', error_message='Google authentication failed')) # Need to create this route or redirect elsewhere
+        # Redirect to frontend callback with error message
+        frontend_callback_url = os.getenv('FRONTEND_AUTH_CALLBACK_URL', 'http://localhost:3000/auth/callback')
+        error_message = 'Google authentication failed. Please try again.'
+        # Simple URL encoding for the error message (replace spaces)
+        encoded_error = error_message.replace(' ', '+')
+        redirect_url_with_error = f"{frontend_callback_url}?error={encoded_error}"
+        return redirect(redirect_url_with_error)
 
 # Placeholder error route (or redirect to main login)
-@auth_bp.route('/login-error')
-def login_error_page():
-    error_message = request.args.get('error_message', 'An unknown error occurred.')
-    # In a real app, you might render a template here
-    return jsonify(error=error_message), 400
+# @auth_bp.route('/login-error') # No longer needed for Google flow
+# def login_error_page():
+#     error_message = request.args.get('error_message', 'An unknown error occurred.')
+#     # In a real app, you might render a template here
+#     return jsonify(error=error_message), 400
 
 # --- User Profile Route ---
 
