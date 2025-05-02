@@ -27,7 +27,8 @@ class User(Base):
     name = Column(String(100), nullable=False)
     email = Column(String(120), unique=True, nullable=False)
     phone = Column(String(20), nullable=True) # Assuming phone is optional
-    role = Column(SQLEnum(UserRole), default=UserRole.USER, nullable=False)
+    avatar_url = Column(String(255), nullable=True) # Added avatar URL
+    role = Column(SQLEnum(UserRole), nullable=True) # Allow NULL, remove default
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
@@ -35,14 +36,15 @@ def init_db():
     print("Initializing User DB")
     Base.metadata.create_all(bind=engine)
 
-def add_user(name: str, email: str, phone: str = None, role: UserRole = UserRole.USER) -> User | None:
-    """Adds a new user to the database."""
+def add_user(name: str, email: str, phone: str = None, avatar_url: str = None, role: UserRole = None) -> User | None:
+    """Adds a new user to the database. Role is optional and defaults to NULL."""
     try:
         user = User(
             name=name,
             email=email,
             phone=phone,
-            role=role
+            avatar_url=avatar_url,
+            role=role # Pass role (will be NULL if None is passed)
         )
         db_session.add(user)
         db_session.commit()

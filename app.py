@@ -3,7 +3,7 @@ from utils.env_check import load_and_check_env_variables  # Import the environme
 load_and_check_env_variables()
 
 from flask import Flask, render_template
-from extensions import socketio  # Import SocketIO
+from extensions import socketio, oauth  # Import SocketIO and OAuth
 from limiter import limiter  # Import the Limiter instance
 from cors import cors        # Import the CORS instance
 from utils.version import get_version  # Import version management
@@ -53,10 +53,25 @@ def create_app():
     # Initialize Flask-CORS with the app object
     cors.init_app(app)
 
+    # Initialize Authlib OAuth
+    oauth.init_app(app)
+    # Register Google OAuth client
+    oauth.register(
+        name='google',
+        server_metadata_url='https://accounts.google.com/.well-known/openid-configuration',
+        client_kwargs={
+            'scope': 'openid email profile' # Request access to OpenID, email, and profile
+        }
+        # client_id, client_secret are loaded from app.config automatically by Authlib
+    )
+
     # Environment variables
     app.secret_key = os.getenv('APP_KEY')
     app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv('DATABASE_URL')
     app.config['JWT_SECRET_KEY'] = os.getenv('JWT_SECRET_KEY')
+    # Google OAuth Config
+    app.config['GOOGLE_CLIENT_ID'] = os.getenv('GOOGLE_CLIENT_ID')
+    app.config['GOOGLE_CLIENT_SECRET'] = os.getenv('GOOGLE_CLIENT_SECRET')
 
     # Register RESTx API blueprint first
     app.register_blueprint(api_v1_bp)
