@@ -56,6 +56,7 @@ def create_app():
     # Environment variables
     app.secret_key = os.getenv('APP_KEY')
     app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv('DATABASE_URL')
+    app.config['JWT_SECRET_KEY'] = os.getenv('JWT_SECRET_KEY')
 
     # Register RESTx API blueprint first
     app.register_blueprint(api_v1_bp)

@@ -1,197 +1,221 @@
-from flask import Blueprint, request, redirect, url_for, render_template, session, jsonify, flash
-from limiter import limiter  # Import the limiter instance
 import os
-from database.auth_db import upsert_auth
-from database.user_db import authenticate_user, User, db_session, find_user_by_username, find_user_by_email  # Import the function
-import re
-from utils.session import check_session_validity
-import secrets
-
-# Access environment variables
-LOGIN_RATE_LIMIT_MIN = os.getenv("LOGIN_RATE_LIMIT_MIN", "5 per minute")
-LOGIN_RATE_LIMIT_HOUR = os.getenv("LOGIN_RATE_LIMIT_HOUR", "25 per hour")
-RESET_RATE_LIMIT = "3 per hour"  # More restrictive rate limit for password reset
+import jwt
+import random
+import string
+import datetime
+from flask import Blueprint, request, current_app
+from database.user_db import find_user_by_email, add_user, UserRole
+from utils.cache import get_cache, set_cache, delete_cache
+from utils.response import success_response, error_response
+from utils.email_utils import send_otp_email
+from limiter import limiter # Assuming limiter is configured in app factory
 
 auth_bp = Blueprint('auth', __name__, url_prefix='/auth')
 
+OTP_CACHE_TTL = 300 # 5 minutes
+JWT_EXPIRATION_DELTA = datetime.timedelta(hours=24)
+
+def generate_otp(length=6):
+    """Generates a random OTP."""
+    return ''.join(random.choices(string.digits, k=length))
+
 @auth_bp.errorhandler(429)
 def ratelimit_handler(e):
-    return jsonify(error="Rate limit exceeded"), 429
+    return error_response("Rate limit exceeded", error_code="RATE_LIMIT_EXCEEDED"), 429
 
-@auth_bp.route('/login', methods=['GET', 'POST'])
-@limiter.limit(LOGIN_RATE_LIMIT_MIN)
-@limiter.limit(LOGIN_RATE_LIMIT_HOUR)
+# Rate limits can be adjusted as needed
+@auth_bp.route('/signup', methods=['POST'])
+@limiter.limit("10 per hour")
+def signup():
+    data = request.get_json()
+    if not data:
+        return error_response("Missing JSON payload", error_code="BAD_REQUEST"), 400
+
+    name = data.get('name')
+    email = data.get('email')
+    phone = data.get('phone') # Optional
+
+    if not name or not email:
+        return error_response("Missing required fields: name, email", error_code="BAD_REQUEST"), 400
+
+    # Basic email format validation (consider using a library like email_validator)
+    if "@" not in email or "." not in email:
+         return error_response("Invalid email format", error_code="INVALID_EMAIL"), 400
+
+    # Check if user already exists in DB
+    if find_user_by_email(email):
+        return error_response("User with this email already exists", error_code="USER_EXISTS"), 409
+
+    otp = generate_otp()
+    cache_key = f"otp:signup:{email}"
+    user_details = {"name": name, "email": email, "phone": phone, "otp": otp}
+
+    # Store user details and OTP in cache
+    if not set_cache(cache_key, user_details, ttl=OTP_CACHE_TTL):
+        return error_response("Failed to initiate signup process", error_code="CACHE_ERROR"), 500
+
+    # Send OTP via email
+    if not send_otp_email(email, otp):
+         # Note: send_otp_email currently logs and returns True even on failure for testing
+         # In production, handle email sending failure appropriately
+         print(f"Warning: Failed to send OTP email to {email}, but proceeding.")
+         # Consider returning an error here in a real deployment if email is critical
+         # return error_response("Failed to send OTP email", error_code="EMAIL_ERROR"), 500
+
+    return success_response(message="OTP sent to your email for verification.")
+
+@auth_bp.route('/verify-otp', methods=['POST'])
+@limiter.limit("20 per hour")
+def verify_otp():
+    data = request.get_json()
+    if not data:
+        return error_response("Missing JSON payload", error_code="BAD_REQUEST"), 400
+
+    email = data.get('email')
+    otp_provided = data.get('otp')
+
+    if not email or not otp_provided:
+        return error_response("Missing required fields: email, otp", error_code="BAD_REQUEST"), 400
+
+    # Check both signup and login OTP caches
+    signup_cache_key = f"otp:signup:{email}"
+    login_cache_key = f"otp:login:{email}"
+
+    cached_data_signup = get_cache(signup_cache_key)
+    cached_data_login = get_cache(login_cache_key)
+
+    user_details = None
+    is_signup = False
+    cache_key_to_delete = None
+
+    if cached_data_signup and cached_data_signup.get("otp") == otp_provided:
+        user_details = cached_data_signup
+        is_signup = True
+        cache_key_to_delete = signup_cache_key
+    elif cached_data_login and cached_data_login.get("otp") == otp_provided:
+        user_details = cached_data_login # Contains only OTP for login
+        cache_key_to_delete = login_cache_key
+    else:
+        return error_response("Invalid or expired OTP", error_code="INVALID_OTP"), 400
+
+    # --- OTP Verified --- 
+
+    user = find_user_by_email(email)
+
+    if is_signup:
+        if not user_details:
+             return error_response("Signup data missing from cache", error_code="CACHE_ERROR"), 500
+        # Create user in DB if it was a signup
+        user = add_user(
+            name=user_details['name'],
+            email=user_details['email'],
+            phone=user_details.get('phone'),
+            role=UserRole.USER # Default role, adjust if needed
+        )
+        if not user:
+            return error_response("Failed to create user account", error_code="DB_ERROR"), 500
+    elif not user:
+         # This case should ideally not happen if login OTP was generated,
+         # but check just in case.
+         return error_response("User not found for login verification", error_code="USER_NOT_FOUND"), 404
+
+    # Generate JWT Token
+    try:
+        jwt_secret = current_app.config.get('JWT_SECRET_KEY')
+        if not jwt_secret:
+             print("[ERROR] JWT_SECRET_KEY not configured!")
+             return error_response("Server configuration error", error_code="CONFIG_ERROR"), 500
+
+        payload = {
+            'user_id': user.id,
+            'email': user.email,
+            'role': user.role.value, # Use the enum value
+            'exp': datetime.datetime.now(datetime.timezone.utc) + JWT_EXPIRATION_DELTA
+        }
+        token = jwt.encode(payload, jwt_secret, algorithm="HS256")
+
+        # Delete OTP from cache after successful verification
+        if cache_key_to_delete:
+            delete_cache(cache_key_to_delete)
+
+        return success_response(data={'token': token}, message="Verification successful.")
+
+    except jwt.PyJWTError as e:
+        print(f"[ERROR] Failed to generate JWT: {e}")
+        return error_response("Failed to generate authentication token", error_code="JWT_ERROR"), 500
+    except Exception as e:
+        print(f"[ERROR] Unexpected error during verification: {e}")
+        return error_response("An unexpected error occurred", error_code="UNEXPECTED_ERROR"), 500
+
+@auth_bp.route('/login', methods=['POST'])
+@limiter.limit("10 per hour")
 def login():
-    if find_user_by_username() is None:
-        return redirect(url_for('core_bp.setup'))
+    data = request.get_json()
+    if not data:
+        return error_response("Missing JSON payload", error_code="BAD_REQUEST"), 400
 
-    if 'user' in session:
-            return redirect(url_for('auth.broker_login'))
-    
-    if session.get('logged_in'):
-        return redirect(url_for('dashboard_bp.dashboard'))
+    email = data.get('email')
+    if not email:
+        return error_response("Missing required field: email", error_code="BAD_REQUEST"), 400
 
-    if request.method == 'GET':
-        return render_template('login.html')
-    elif request.method == 'POST':
-        username = request.form['username']
-        password = request.form['password']
-        
-        if authenticate_user(username, password):
-            session['user'] = username  # Set the username in the session
-            print("login success")
-            # Redirect to broker login without marking as fully logged in
-            return jsonify({'status': 'success'}), 200
-        else:
-            return jsonify({'status': 'error', 'message': 'Invalid credentials'}), 401
+    # Check if user exists
+    user = find_user_by_email(email)
+    if not user:
+        return error_response("User not found with this email", error_code="USER_NOT_FOUND"), 404
 
-@auth_bp.route('/broker', methods=['GET', 'POST'])
-@limiter.limit(LOGIN_RATE_LIMIT_MIN)
-@limiter.limit(LOGIN_RATE_LIMIT_HOUR)
-def broker_login():
-    if session.get('logged_in'):
-        return redirect(url_for('dashboard_bp.dashboard'))
-    if request.method == 'GET':
-        if 'user' not in session:
-            return redirect(url_for('auth.login'))
-            
-        # Get broker configuration (already validated at startup)
-        BROKER_API_KEY = os.getenv('BROKER_API_KEY')
-        BROKER_API_SECRET = os.getenv('BROKER_API_SECRET')
-        REDIRECT_URL = os.getenv('REDIRECT_URL')
-        broker_name = re.search(r'/([^/]+)/callback$', REDIRECT_URL).group(1)
-            
-        return render_template('broker.html', 
-                             broker_api_key=BROKER_API_KEY, 
-                             broker_api_secret=BROKER_API_SECRET,
-                             redirect_url=REDIRECT_URL,
-                             broker_name=broker_name)
+    otp = generate_otp()
+    cache_key = f"otp:login:{email}"
+    otp_data = {"otp": otp}
 
-@auth_bp.route('/reset-password', methods=['GET', 'POST'])
-@limiter.limit(RESET_RATE_LIMIT)  # More restrictive rate limit for password reset
-def reset_password():
-    if request.method == 'GET':
-        return render_template('reset_password.html', email_sent=False)
-    
-    step = request.form.get('step')
-    
-    if step == 'email':
-        email = request.form.get('email')
-        user = find_user_by_email(email)
-        
-        if user:
-            session['reset_email'] = email
-            return render_template('reset_password.html', 
-                                 email_sent=True, 
-                                 totp_verified=False,
-                                 email=email)
-        else:
-            flash('No account found with that email address.', 'error')
-            return render_template('reset_password.html', email_sent=False)
-            
-    elif step == 'totp':
-        email = request.form.get('email')
-        totp_code = request.form.get('totp_code')
-        user = find_user_by_email(email)
-        
-        if user and user.verify_totp(totp_code):
-            # Generate a secure token for the password reset
-            token = secrets.token_urlsafe(32)
-            session['reset_token'] = token
-            session['reset_email'] = email
-            
-            return render_template('reset_password.html',
-                                 email_sent=True,
-                                 totp_verified=True,
-                                 email=email,
-                                 token=token)
-        else:
-            flash('Invalid TOTP code. Please try again.', 'error')
-            return render_template('reset_password.html',
-                                 email_sent=True,
-                                 totp_verified=False,
-                                 email=email)
-            
-    elif step == 'password':
-        email = request.form.get('email')
-        token = request.form.get('token')
-        password = request.form.get('password')
-        
-        # Verify token from session
-        if token != session.get('reset_token') or email != session.get('reset_email'):
-            flash('Invalid or expired reset token.', 'error')
-            return redirect(url_for('auth.reset_password'))
-        
-        user = find_user_by_email(email)
-        if user:
-            user.set_password(password)
-            db_session.commit()
-            
-            # Clear reset session data
-            session.pop('reset_token', None)
-            session.pop('reset_email', None)
-            
-            flash('Your password has been reset successfully.', 'success')
-            return redirect(url_for('auth.login'))
-        else:
-            flash('Error resetting password.', 'error')
-            return redirect(url_for('auth.reset_password'))
-    
-    return render_template('reset_password.html', email_sent=False)
+    # Store OTP in cache
+    if not set_cache(cache_key, otp_data, ttl=OTP_CACHE_TTL):
+        return error_response("Failed to initiate login process", error_code="CACHE_ERROR"), 500
 
-@auth_bp.route('/change', methods=['GET', 'POST'])
-@check_session_validity
-def change_password():
-    if 'user' not in session:
-        # If the user is not logged in, redirect to login page
-        flash('You must be logged in to change your password.', 'warning')
-        return redirect(url_for('auth.login'))
+    # Send OTP via email
+    if not send_otp_email(email, otp):
+        print(f"Warning: Failed to send login OTP email to {email}, but proceeding.")
+        # Consider returning an error here in production
+        # return error_response("Failed to send OTP email", error_code="EMAIL_ERROR"), 500
 
-    if request.method == 'POST':
-        username = session['user']
-        old_password = request.form['old_password']
-        new_password = request.form['new_password']
-        confirm_password = request.form['confirm_password']
+    return success_response(message="OTP sent to your email for login.")
 
-        user = User.query.filter_by(username=username).first()
+@auth_bp.route('/resend-otp', methods=['POST'])
+@limiter.limit("5 per hour")
+def resend_otp():
+    data = request.get_json()
+    if not data:
+        return error_response("Missing JSON payload", error_code="BAD_REQUEST"), 400
 
-        if user and user.check_password(old_password):
-            if new_password == confirm_password:
-                # Here, you should also ensure the new password meets your policy before updating
-                user.set_password(new_password)
-                db_session.commit()
-                # Use flash to notify the user of success
-                flash('Your password has been changed successfully.', 'success')
-                # Redirect to a page where the user can see this confirmation, or stay on the same page
-                return redirect(url_for('auth.change_password'))
-            else:
-                flash('New password and confirm password do not match.', 'error')
-        else:
-            flash('Old Password is incorrect.', 'error')
-            # Optionally, redirect to the same page to let the user try again
-            return redirect(url_for('auth.change_password'))
+    email = data.get('email')
+    if not email:
+        return error_response("Missing required field: email", error_code="BAD_REQUEST"), 400
 
-    return render_template('profile.html', username=session['user'])
+    # Check if there is an active OTP process (signup or login)
+    signup_cache_key = f"otp:signup:{email}"
+    login_cache_key = f"otp:login:{email}"
 
-@auth_bp.route('/logout')
-@limiter.limit(LOGIN_RATE_LIMIT_MIN)
-@limiter.limit(LOGIN_RATE_LIMIT_HOUR)
-def logout():
-    if session.get('logged_in'):
-        username = session['user']
-        
-        #writing to database      
-        inserted_id = upsert_auth(username, "", "", revoke=True)
-        if inserted_id is not None:
-            print(f"Database Upserted record with ID: {inserted_id}")
-            print(f'Auth Revoked in the Database')
-        else:
-            print("Failed to upsert auth token")
-        
-        # Remove tokens and user information from session
-        session.pop('user', None)  # Remove 'user' from session if exists
-        session.pop('broker', None)  # Remove 'user' from session if exists
-        session.pop('logged_in', None)
+    cached_data = get_cache(signup_cache_key) or get_cache(login_cache_key)
+    cache_key_to_update = signup_cache_key if get_cache(signup_cache_key) else login_cache_key if get_cache(login_cache_key) else None
 
-    # Redirect to login page after logout
-    return redirect(url_for('auth.login'))
+    if not cached_data or not cache_key_to_update:
+        return error_response("No active OTP process found for this email. Please start signup or login first.", error_code="NO_ACTIVE_OTP"), 404
+
+    # Generate new OTP and update cache
+    new_otp = generate_otp()
+    cached_data['otp'] = new_otp # Update the OTP in the existing cached data
+
+    if not set_cache(cache_key_to_update, cached_data, ttl=OTP_CACHE_TTL):
+         return error_response("Failed to update OTP cache", error_code="CACHE_ERROR"), 500
+
+    # Resend OTP via email
+    if not send_otp_email(email, new_otp):
+        print(f"Warning: Failed to resend OTP email to {email}, but proceeding.")
+        # Consider returning an error here in production
+        # return error_response("Failed to send OTP email", error_code="EMAIL_ERROR"), 500
+
+    return success_response(message="New OTP sent to your email.")
+
+# Note: The original /broker and /logout routes depended on the old session/auth system.
+# A new JWT-based logout mechanism (e.g., token blocklist) or reliance on client-side token deletion
+# would be needed if explicit server-side logout is required.
+# Broker login flow needs complete redesign based on JWT and broker requirements.
