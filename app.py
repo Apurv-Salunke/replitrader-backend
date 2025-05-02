@@ -17,7 +17,6 @@ from blueprints.search import search_bp
 from blueprints.apikey import api_key_bp
 from blueprints.log import log_bp
 from blueprints.brlogin import brlogin_bp
-from blueprints.core import core_bp
 from blueprints.analyzer import analyzer_bp  # Import the analyzer blueprint
 from blueprints.settings import settings_bp  # Import the settings blueprint
 # from blueprints.chartink import chartink_bp  # Import the chartink blueprint
@@ -72,7 +71,6 @@ def create_app():
     app.register_blueprint(api_key_bp)
     app.register_blueprint(log_bp)
     app.register_blueprint(brlogin_bp)
-    app.register_blueprint(core_bp)
     app.register_blueprint(analyzer_bp)
     app.register_blueprint(settings_bp)
     app.register_blueprint(traffic_bp)
