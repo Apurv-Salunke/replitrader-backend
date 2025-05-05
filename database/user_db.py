@@ -1,12 +1,13 @@
 # database/user_db.py
 
 import os
-from sqlalchemy import create_engine, Column, Integer, String, DateTime, Enum as SQLEnum
+from sqlalchemy import create_engine, Column, String, DateTime, Enum as SQLEnum
 from sqlalchemy.orm import scoped_session, sessionmaker
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.sql import func
 import enum
+import uuid
 
 # Database connection details
 DATABASE_URL = os.getenv('DATABASE_URL')
@@ -23,7 +24,7 @@ class UserRole(enum.Enum):
 
 class User(Base):
     __tablename__ = 'users'
-    id = Column(Integer, primary_key=True)
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     name = Column(String(100), nullable=False)
     email = Column(String(120), unique=True, nullable=False)
     phone = Column(String(20), nullable=True) # Assuming phone is optional
